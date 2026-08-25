@@ -153,18 +153,39 @@ async function handleLogin(e) {
       const data = await api('/auth/student-login', {
         method: 'POST',
         body: JSON.stringify({ code, name, phone, guardianPhone })
+      });if (data && data.token) {
+  const saved = setToken(data.token);
+
+  if (!saved) {
+    toast('❌ تعذر حفظ تسجيل الدخول على الجهاز');
+    if (form) {
+      form.querySelectorAll('input').forEach((i) => {
+        i.disabled = false;
       });
-           if (data && data.token) {
-        const saved = setToken(data.token);
-        if (!saved) {
-          toast('❌ المتصفح مانع حفظ بيانات الدخول (وضع التصفح الخاص/Private مفعّل). اقفل وضع التصفح الخاص وجرب تاني.');
-          if (form) form.querySelectorAll('input').forEach((i) => i.disabled = false);
-          return;
-        }
-        toast('✅ تم تسجيل الدخول');
-        // Navigate the instant we're actually logged in — no artificial delay.
-        location.href = 'index.html';
-      } else {
+    }
+    return;
+  }
+
+  localStorage.setItem(
+    'mfx_student_user',
+    JSON.stringify(data.user || {})
+  );
+
+  toast('✅ تم تسجيل الدخول');
+
+  setTimeout(() => {
+    window.location.replace('index.html');
+  }, 300);
+
+} else {
+  toast('❌ ' + ((data && data.error) || 'كود أو اسم غير صحيح'));
+
+  if (form) {
+    form.querySelectorAll('input').forEach((i) => {
+      i.disabled = false;
+    });
+  }
+} {
         toast('❌ ' + ((data && data.error) || 'كود أو اسم غير صحيح'));
         if (form) form.querySelectorAll('input').forEach((i) => i.disabled = false);
       }
