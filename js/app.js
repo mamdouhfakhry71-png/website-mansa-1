@@ -1,6 +1,19 @@
 // ===== MFX Student App =====
 const API = 'https://web-production-3102bb.up.railway.app/api';
 
+// Kill any Service Worker left registered from an old deploy. This app
+// isn't meant to run as an offline-first PWA, so a stray SW (from an
+// earlier experiment, or a browser that cached one) can silently keep
+// serving an old, broken copy of this very file to a phone even after a
+// fresh deploy and a manual cache-clear — Service Worker caches are not
+// touched by a normal "clear browsing data > cache" on some mobile
+// browsers. This runs on every page load and is a no-op once cleaned up.
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.getRegistrations().then((regs) => {
+    regs.forEach((r) => r.unregister());
+  }).catch(() => {});
+}
+
 function toast(msg) {
   let t = document.querySelector('.toast');
   if (t) t.remove();
@@ -108,7 +121,14 @@ function isTokenExpired(token) {
   try {
     const payload = JSON.parse(atob(token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')));
     if (!payload.exp) return false;
-    return Date.now() >= payload.exp * 1000;
+    // 5-minute grace window: this check runs against the DEVICE's own
+    // clock, and a phone with a slightly fast clock/timezone misconfig
+    // would otherwise see a perfectly valid, freshly-issued token as
+    // "already expired" the instant it lands on the next page — logging
+    // the student straight back out. A small buffer absorbs normal clock
+    // drift without meaningfully weakening the expiry check itself.
+    const CLOCK_SKEW_TOLERANCE_MS = 5 * 60 * 1000;
+    return Date.now() >= (payload.exp * 1000 + CLOCK_SKEW_TOLERANCE_MS);
   } catch (e) {
     return true; // unreadable token = treat as expired
   }
