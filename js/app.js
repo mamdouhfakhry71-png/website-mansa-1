@@ -147,6 +147,12 @@ async function api(path, opts = {}) {
 }
 
 // Auth check
+//
+// TEMPORARY DIAGNOSTIC BUILD: shows an on-screen alert() explaining
+// exactly why a redirect back to login is happening, right on the phone
+// that's failing — no devtools, no computer, no cable needed. Remove the
+// two alert() calls (and this comment) once the cause is confirmed; they
+// are the ONLY behavior change versus the normal requireAuth().
 function requireAuth() {
   const onLoginPage = location.pathname.includes('login.html');
 
@@ -155,11 +161,21 @@ function requireAuth() {
   const token = getToken();
 
   if (!token) {
+    alert('DEBUG: مفيش توكن خالص في الجهاز ده (localStorage فاضي أو مش بيتحفظ).');
     location.replace('login.html');
     return;
   }
 
   if (isTokenExpired(token)) {
+    let debugInfo = 'DEBUG: التوكن موجود بس شايفه منتهي.\n';
+    try {
+      const payload = JSON.parse(atob(token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')));
+      debugInfo += 'exp (توقيت السيرفر): ' + new Date(payload.exp * 1000).toString() + '\n';
+    } catch (e) {
+      debugInfo += 'تعذّر فك التوكن أصلاً (شكله بايظ أو مش JWT سليم).\n';
+    }
+    debugInfo += 'دلوقتي (ساعة الموبايل): ' + new Date().toString();
+    alert(debugInfo);
     logout();
   }
 }
