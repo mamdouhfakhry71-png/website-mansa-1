@@ -61,16 +61,46 @@ async function withPageLoader(fn) {
   }
 }
 
-function getToken() { return localStorage.getItem('mfx_admin_token'); }
+function getToken() {
+  try {
+    return localStorage.getItem('mfx_student_token');
+  } catch (e) {
+    return null;
+  }
+}
+
 function setToken(t) {
   try {
-    localStorage.setItem('mfx_admin_token', t);
-    return localStorage.getItem('mfx_admin_token') === t;
+    if (!t) return false;
+
+    localStorage.setItem('mfx_student_token', t);
+
+    const saved = localStorage.getItem('mfx_student_token');
+
+    return saved === t;
   } catch (e) {
     return false;
   }
 }
-function logout() { localStorage.removeItem('mfx_admin_token'); location.href = 'login.html'; }
+
+function getUser() {
+  try {
+    return JSON.parse(
+      localStorage.getItem('mfx_student_user') || '{}'
+    );
+  } catch (e) {
+    return {};
+  }
+}
+
+function logout() {
+  try {
+    localStorage.removeItem('mfx_student_token');
+    localStorage.removeItem('mfx_student_user');
+  } catch (e) {}
+
+  location.replace('login.html');
+}
 // Reads the JWT's own expiry (exp claim) without a network call, so an
 // expired session is caught the instant the page loads instead of only
 // after some data request fails with 401.
