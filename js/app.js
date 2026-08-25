@@ -1,5 +1,5 @@
 // ===== MFX Student App =====
-const API = 'https://web-production-9f12b.up.railway.app/api';
+const API = 'https://web-production-3102bb.up.railway.app/api';
 
 function toast(msg) {
   let t = document.querySelector('.toast');
