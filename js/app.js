@@ -129,9 +129,17 @@ async function api(path, opts = {}) {
 // Auth check
 function requireAuth() {
   const onLoginPage = location.pathname.includes('login.html');
-  const token = getToken();
+
   if (onLoginPage) return;
-  if (!token || isTokenExpired(token)) {
+
+  const token = getToken();
+
+  if (!token) {
+    location.replace('login.html');
+    return;
+  }
+
+  if (isTokenExpired(token)) {
     logout();
   }
 }
@@ -153,41 +161,39 @@ async function handleLogin(e) {
       const data = await api('/auth/student-login', {
         method: 'POST',
         body: JSON.stringify({ code, name, phone, guardianPhone })
-      });if (data && data.token) {
-  const saved = setToken(data.token);
-
-  if (!saved) {
-    toast('❌ تعذر حفظ تسجيل الدخول على الجهاز');
-    if (form) {
-      form.querySelectorAll('input').forEach((i) => {
-        i.disabled = false;
       });
-    }
-    return;
-  }
+      if (data && data.token) {
+        const saved = setToken(data.token);
 
-  localStorage.setItem(
-    'mfx_student_user',
-    JSON.stringify(data.user || {})
-  );
+        if (!saved) {
+          toast('❌ تعذر حفظ تسجيل الدخول على الجهاز');
+          if (form) {
+            form.querySelectorAll('input').forEach((i) => {
+              i.disabled = false;
+            });
+          }
+          return;
+        }
 
-  toast('✅ تم تسجيل الدخول');
+        localStorage.setItem(
+          'mfx_student_user',
+          JSON.stringify(data.user || {})
+        );
 
-  setTimeout(() => {
-    window.location.replace('index.html');
-  }, 300);
+        toast('✅ تم تسجيل الدخول');
 
-} else {
-  toast('❌ ' + ((data && data.error) || 'كود أو اسم غير صحيح'));
+        setTimeout(() => {
+          window.location.replace('index.html');
+        }, 300);
 
-  if (form) {
-    form.querySelectorAll('input').forEach((i) => {
-      i.disabled = false;
-    });
-  }
-} {
+      } else {
         toast('❌ ' + ((data && data.error) || 'كود أو اسم غير صحيح'));
-        if (form) form.querySelectorAll('input').forEach((i) => i.disabled = false);
+
+        if (form) {
+          form.querySelectorAll('input').forEach((i) => {
+            i.disabled = false;
+          });
+        }
       }
     } catch (err) {
       if (form) form.querySelectorAll('input').forEach((i) => i.disabled = false);
@@ -762,7 +768,9 @@ function startTimer() {
 
 function submitExam() {
   const total = examState.questions.length;
-  const ans = Object.keys(examState.answers).length;
+  const ans = examState.questions.filter((q) =>
+    isAnswered_(examState.answers[q.id])
+  ).length;
   const modal = document.getElementById('submit-modal');
   const msg = document.getElementById('modal-msg');
   if (modal) modal.style.display = 'flex';
@@ -843,13 +851,20 @@ function setResultModalState_({ icon, title, score, rank, time, showRetry }) {
 // queueing (still idempotent — the attempt id is unchanged).
 async function retrySubmit_() {
   showSubmissionReceived_();
-  pollSubmissionStatus_(examState.attemptId);
+
   try {
     await api('/attempts/' + examState.attemptId + '/submit', {
       method: 'POST',
-      body: JSON.stringify({ answers: examState.answers })
+      body: JSON.stringify({
+        answers: examState.answers
+      })
     });
-  } catch (e) {}
+
+    pollSubmissionStatus_(examState.attemptId);
+
+  } catch (e) {
+    toast('❌ فشل إعادة إرسال الامتحان');
+  }
 }
 
 // Graduated polling: 2s, 4s, 8s, then holds at 8s. Stops immediately on
