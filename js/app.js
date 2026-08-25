@@ -61,11 +61,16 @@ async function withPageLoader(fn) {
   }
 }
 
-function getToken() { return localStorage.getItem('mfx_student_token'); }
-function setToken(t) { localStorage.setItem('mfx_student_token', t); }
-function getUser() { try { return JSON.parse(localStorage.getItem('mfx_student_user') || '{}'); } catch(e) { return {}; } }
-function logout() { localStorage.removeItem('mfx_student_token'); localStorage.removeItem('mfx_student_user'); location.href = 'login.html'; }
-
+function getToken() { return localStorage.getItem('mfx_admin_token'); }
+function setToken(t) {
+  try {
+    localStorage.setItem('mfx_admin_token', t);
+    return localStorage.getItem('mfx_admin_token') === t;
+  } catch (e) {
+    return false;
+  }
+}
+function logout() { localStorage.removeItem('mfx_admin_token'); location.href = 'login.html'; }
 // Reads the JWT's own expiry (exp claim) without a network call, so an
 // expired session is caught the instant the page loads instead of only
 // after some data request fails with 401.
@@ -119,11 +124,16 @@ async function handleLogin(e) {
         method: 'POST',
         body: JSON.stringify({ code, name, phone, guardianPhone })
       });
-      if (data && data.token) {
-        setToken(data.token);
-        localStorage.setItem('mfx_student_user', JSON.stringify(data.user));
+           if (data && data.token) {
+        const saved = setToken(data.token);
+        if (!saved) {
+          toast('❌ المتصفح مانع حفظ بيانات الدخول (وضع التصفح الخاص/Private مفعّل). اقفل وضع التصفح الخاص وجرب تاني.');
+          if (form) form.querySelectorAll('input').forEach((i) => i.disabled = false);
+          return;
+        }
         toast('✅ تم تسجيل الدخول');
-        location.href = 'index.html'; // single navigation — no repeated reloads
+        // Navigate the instant we're actually logged in — no artificial delay.
+        location.href = 'index.html';
       } else {
         toast('❌ ' + ((data && data.error) || 'كود أو اسم غير صحيح'));
         if (form) form.querySelectorAll('input').forEach((i) => i.disabled = false);
