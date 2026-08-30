@@ -1,7 +1,6 @@
 // ===== MFX Student App =====
 const API = 'https://web-production-3102bb.up.railway.app/api';
 
-
 function toast(msg) {
   let t = document.querySelector('.toast');
   if (t) t.remove();
@@ -12,6 +11,42 @@ function toast(msg) {
   requestAnimationFrame(() => t.classList.add('on'));
   setTimeout(() => { t.classList.remove('on'); setTimeout(() => t.remove(), 400); }, 3000);
 }
+
+// ===== Global click rate-limiter =====
+// Blocks a SECOND click on the same button/link within a short cooldown
+// window, site-wide, for every page. This is separate from — and a
+// backstop for — withButtonLock below: that only protects the specific
+// actions someone remembered to wrap. This catches everything else
+// (plain onclick="..." handlers: pagination, tabs, small actions) without
+// having to touch every single one of them individually. It does NOT
+// affect the exam's answer-option clicks (pickOpt/toggleMultiOpt) — those
+// go through their own delegated listener on <label class="opt">
+// elements, which this selector doesn't match, so answering stays instant.
+//
+// How it works: a single listener on document, in the CAPTURE phase (so
+// it runs before the target element's own onclick), tracks the last time
+// each element was clicked in a WeakMap. A second click on the SAME
+// element inside the cooldown window is stopped before it ever reaches
+// that element's own handler — e.stopPropagation() during capture means
+// the event never continues down to the target at all. Clicking a
+// DIFFERENT button right after is unaffected, since the cooldown is
+// tracked per-element, not globally.
+(function setupMfxClickRateLimiter() {
+  const COOLDOWN_MS = 700;
+  const lastClickAt = new WeakMap();
+  document.addEventListener('click', function (e) {
+    const el = e.target.closest('button, .btn, [onclick]');
+    if (!el) return;
+    const now = Date.now();
+    const last = lastClickAt.get(el) || 0;
+    if (now - last < COOLDOWN_MS) {
+      e.stopPropagation();
+      e.preventDefault();
+      return;
+    }
+    lastClickAt.set(el, now);
+  }, true);
+})();
 
 // ===== Global loading / anti-duplicate-click helpers =====
 // Every important action (login, start exam, save, submit) routes through
@@ -1045,6 +1080,18 @@ async function loadDashboard() {
 let videoProgressTimer = null;
 let videoWatchState = { videoId: null, startedAt: 0, durationSeconds: 0, sentPercentage: 0 };
 
+// Pulls the file id out of any of Drive's common share-link shapes:
+//   .../file/d/FILEID/view?usp=sharing   .../open?id=FILEID   .../d/FILEID
+// Same helper the admin panel uses when a course link is pasted.
+function extractDriveFileId_(url) {
+  const patterns = [/\/d\/([a-zA-Z0-9_-]{10,})/, /[?&]id=([a-zA-Z0-9_-]{10,})/];
+  for (const re of patterns) {
+    const m = url.match(re);
+    if (m) return m[1];
+  }
+  return null;
+}
+
 async function loadVideoPage() {
   const params = new URLSearchParams(location.search);
   const id = params.get('id');
@@ -1056,8 +1103,21 @@ async function loadVideoPage() {
     document.getElementById('video-title').textContent = video.title || 'فيديو';
     document.getElementById('back-to-course').href = 'course.html?id=' + video.unitId;
     const frame = document.getElementById('video-frame');
-    if (frame && video.driveFileId) {
-      frame.src = 'https://drive.google.com/file/d/' + video.driveFileId + '/preview';
+    // BUG FIX (self-healing): videos added by pasting a normal Drive
+    // share link (.../view?usp=sharing) used to have that exact URL
+    // saved as driveUrl with no driveFileId — and a Drive /view URL
+    // refuses to load inside an <iframe> at all (shows a
+    // permission-style error) no matter how the file is actually
+    // shared; only the .../preview form embeds. Rather than requiring
+    // every already-saved video to be re-added from the admin panel,
+    // this pulls the file ID out of driveUrl on the fly whenever
+    // driveFileId wasn't stored, and always builds the correct
+    // embeddable /preview URL from it — fixing existing videos
+    // automatically, not just new ones.
+    const fallbackFileId = !video.driveFileId && video.driveUrl ? extractDriveFileId_(video.driveUrl) : null;
+    const resolvedFileId = video.driveFileId || fallbackFileId;
+    if (frame && resolvedFileId) {
+      frame.src = 'https://drive.google.com/file/d/' + resolvedFileId + '/preview';
     } else if (frame && video.driveUrl) {
       frame.src = video.driveUrl;
     }
