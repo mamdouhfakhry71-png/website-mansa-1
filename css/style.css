@@ -1172,3 +1172,48 @@ textarea.inp {
 .vocab-play-btn:disabled:hover {
   transform: none;
 }
+
+/* ===== Game Boost intro splash (login page) ===== */
+.gb-splash {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background:
+    radial-gradient(circle at 1.5px 1.5px, rgba(238,241,247,0.05) 1px, transparent 0) 0 0/22px 22px,
+    radial-gradient(circle at 50% 45%, var(--accent-glow) 0%, transparent 55%),
+    var(--bg);
+  opacity: 1;
+  visibility: visible;
+  transition: opacity 0.6s ease, visibility 0.6s ease;
+  cursor: pointer;
+}
+.gb-splash.gb-hide {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+.gb-anim {
+  width: min(92vw, 560px);
+  aspect-ratio: 720 / 576;
+  direction: ltr;
+}
+.gb-anim svg { width: 100%; height: 100%; display: block; }
+.gb-skip {
+  position: absolute;
+  bottom: 28px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--bg-glass);
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 8px 22px;
+  font-family: inherit;
+  font-size: 0.85rem;
+  cursor: pointer;
+  transition: var(--transition);
+}
+.gb-skip:hover { color: var(--text); border-color: var(--border-hover); }
