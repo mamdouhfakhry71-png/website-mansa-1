@@ -1,5 +1,5 @@
 // ===== MFX Student App =====
-const API = 'https://web-production-3102bb.up.railway.app/api';
+const API = 'https://web-production-fea72.up.railway.app/api';
 
 function toast(msg) {
   let t = document.querySelector('.toast');
@@ -13,40 +13,40 @@ function toast(msg) {
 }
 
 // ===== Global click rate-limiter =====
-// Blocks a SECOND click on the same button/link within a short cooldown
-// window, site-wide, for every page. This is separate from — and a
-// backstop for — withButtonLock below: that only protects the specific
-// actions someone remembered to wrap. This catches everything else
-// (plain onclick="..." handlers: pagination, tabs, small actions) without
-// having to touch every single one of them individually. It does NOT
-// affect the exam's answer-option clicks (pickOpt/toggleMultiOpt) — those
-// go through their own delegated listener on <label class="opt">
+// Blocks a SECOND click on the same button/link WHILE its first click's
+// own action is still actually running — site-wide, for every page.
+// This is separate from — and a backstop for — withButtonLock below:
+// that only protects the specific actions someone remembered to wrap
+// (with a visible spinner too). This catches everything else (plain
+// onclick="..." handlers: publish/hide/delete buttons, pagination, tabs)
+// without having to touch every single one of them individually. It does
+// NOT affect the exam's answer-option clicks (pickOpt/toggleMultiOpt) —
+// those go through their own delegated listener on <label class="opt">
 // elements, which this selector doesn't match, so answering stays instant.
-//
-// How it works: a single listener on document, in the CAPTURE phase (so
-// it runs before the target element's own onclick), tracks the last time
-// each element was clicked in a WeakMap. A second click on the SAME
-// element inside the cooldown window is stopped before it ever reaches
-// that element's own handler — e.stopPropagation() during capture means
-// the event never continues down to the target at all. Clicking a
-// DIFFERENT button right after is unaffected, since the cooldown is
-// tracked per-element, not globally.
-(function setupMfxClickRateLimiter() {
-  const COOLDOWN_MS = 700;
-  const lastClickAt = new WeakMap();
-  document.addEventListener('click', function (e) {
-    const el = e.target.closest('button, .btn, [onclick]');
-    if (!el) return;
-    const now = Date.now();
-    const last = lastClickAt.get(el) || 0;
-    if (now - last < COOLDOWN_MS) {
-      e.stopPropagation();
-      e.preventDefault();
-      return;
+document.addEventListener('click', function (e) {
+  const el = e.target.closest('button, .btn, [onclick]');
+  if (!el) return;
+  if (el.dataset.mfxBusy === '1') {
+    e.stopPropagation();
+    e.preventDefault();
+    return;
+  }
+  el.dataset.mfxBusy = '1';
+  const before = mfxActiveApiCalls;
+  setTimeout(() => {
+    if (mfxActiveApiCalls > before) {
+      const check = setInterval(() => {
+        if (mfxActiveApiCalls <= before) {
+          clearInterval(check);
+          delete el.dataset.mfxBusy;
+        }
+      }, 100);
+      setTimeout(() => { clearInterval(check); delete el.dataset.mfxBusy; }, 15000);
+    } else {
+      delete el.dataset.mfxBusy;
     }
-    lastClickAt.set(el, now);
-  }, true);
-})();
+  }, 50);
+}, true);
 
 // ===== Global loading / anti-duplicate-click helpers =====
 // Every important action (login, start exam, save, submit) routes through
@@ -171,14 +171,34 @@ async function refreshAccessToken() {
   }
 }
 
+// Tracks how many api() calls are currently in flight — used by the
+// click rate-limiter below to know exactly when a button's own action
+// has actually finished, instead of guessing with a fixed timer.
+let mfxActiveApiCalls = 0;
+
+// api() accepts an optional timeoutMs. When set, the request is aborted
+// after that many ms and api() throws a clearly-marked timeout error
+// instead of hanging indefinitely — used by login below for a fast,
+// clear failure ("try again") instead of a spinner that never resolves.
 async function api(path, opts = {}) {
   const url = API + path;
   const doFetch = async () => {
     const headers = { 'Content-Type': 'application/json' };
     const token = getToken();
     if (token) headers['Authorization'] = 'Bearer ' + token;
-    return fetch(url, { ...opts, headers: { ...headers, ...opts.headers } });
+    const timeoutMs = opts.timeoutMs;
+    if (!timeoutMs) {
+      return fetch(url, { ...opts, headers: { ...headers, ...opts.headers } });
+    }
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      return await fetch(url, { ...opts, headers: { ...headers, ...opts.headers }, signal: controller.signal });
+    } finally {
+      clearTimeout(timer);
+    }
   };
+  mfxActiveApiCalls++;
   try {
     let res = await doFetch();
     // A 401 mid-session (the token expired while the student was
@@ -192,7 +212,17 @@ async function api(path, opts = {}) {
       if (res.status === 401) { logout(); return; }
     }
     return await res.json();
-  } catch (e) { toast('❌ خطأ في الاتصال'); throw e; }
+  } catch (e) {
+    if (e.name === 'AbortError') {
+      const timeoutErr = new Error('TIMEOUT');
+      timeoutErr.isTimeout = true;
+      throw timeoutErr;
+    }
+    toast('❌ خطأ في الاتصال');
+    throw e;
+  } finally {
+    mfxActiveApiCalls--;
+  }
 }
 
 // Auth check — runs on every page load. Instead of logging the student
@@ -237,7 +267,8 @@ async function handleLogin(e) {
     try {
       const data = await api('/auth/student-login', {
         method: 'POST',
-        body: JSON.stringify({ code, name, phone, guardianPhone })
+        body: JSON.stringify({ code, name, phone, guardianPhone }),
+        timeoutMs: 10000
       });
       if (data && data.token) {
         setToken(data.token);
@@ -250,6 +281,9 @@ async function handleLogin(e) {
         if (form) form.querySelectorAll('input').forEach((i) => i.disabled = false);
       }
     } catch (err) {
+      if (err && err.isTimeout) {
+        toast('⏳ السيرفر بطيء دلوقتي — جرّب تاني كمان شوية');
+      }
       if (form) form.querySelectorAll('input').forEach((i) => i.disabled = false);
     }
   });
@@ -258,38 +292,65 @@ async function handleLogin(e) {
 // Load my courses
 async function loadMyCourses() {
   const grid = document.getElementById('my-courses');
+  if (!grid) return;
+
+  const fetchMyCourses = () => api('/students/my-courses');
+
+  // Instant path: if an earlier visit to this page already warmed the
+  // cache, render from it immediately — no waiting on Sheets at all —
+  // then still quietly re-fetch in the background so the cache doesn't
+  // go stale for the NEXT time this page is opened.
+  const cached = mfxCacheGet_('my-courses');
+  if (cached) {
+    renderMyCourses_(cached);
+    fetchMyCourses().then((fresh) => {
+      if (fresh) { mfxCacheSet_('my-courses', fresh); renderMyCourses_(fresh); }
+    }).catch(() => {});
+    return;
+  }
+
+  try {
+    const data = await fetchMyCourses();
+    mfxCacheSet_('my-courses', data);
+    renderMyCourses_(data);
+  } catch (e) {
+    grid.innerHTML = '';
+    const empty = document.getElementById('courses-empty');
+    if (empty) empty.style.display = 'block';
+  }
+}
+
+function renderMyCourses_(data) {
+  const grid = document.getElementById('my-courses');
   const empty = document.getElementById('courses-empty');
   if (!grid) return;
-  try {
-    const data = await api('/students/my-courses');
-    grid.innerHTML = '';
-    if (!data.courses || !data.courses.length) {
-      if (empty) empty.style.display = 'block';
-      return;
-    }
-    if (empty) empty.style.display = 'none';
-    data.courses.forEach(c => {
-      const div = document.createElement('div');
-      div.className = 'card';
-      div.innerHTML = `
-        <div class="card-img">${c.icon || '📚'}</div>
-        <div class="card-body">
-          <span class="card-tag">${c.tag || 'كورس'}</span>
-          <h3>${escapeHtml(c.title)}</h3>
-          <p>${escapeHtml(c.description || '')}</p>
-          <div style="margin:12px 0;">
-            <div style="display:flex; justify-content:space-between; margin-bottom:6px; font-size:0.85rem;">
-              <span style="color:var(--text-secondary);">التقدم</span>
-              <span style="color:var(--accent-light); font-weight:600;">${c.progress || 0}%</span>
-            </div>
-            <div class="prog"><div class="prog-fill" style="width:${c.progress || 0}%"></div></div>
+  grid.innerHTML = '';
+  if (!data.courses || !data.courses.length) {
+    if (empty) empty.style.display = 'block';
+    return;
+  }
+  if (empty) empty.style.display = 'none';
+  data.courses.forEach(c => {
+    const div = document.createElement('div');
+    div.className = 'card';
+    div.innerHTML = `
+      <div class="card-img">${c.icon || '📚'}</div>
+      <div class="card-body">
+        <span class="card-tag">${c.tag || 'كورس'}</span>
+        <h3>${escapeHtml(c.title)}</h3>
+        <p>${escapeHtml(c.description || '')}</p>
+        <div style="margin:12px 0;">
+          <div style="display:flex; justify-content:space-between; margin-bottom:6px; font-size:0.85rem;">
+            <span style="color:var(--text-secondary);">التقدم</span>
+            <span style="color:var(--accent-light); font-weight:600;">${c.progress || 0}%</span>
           </div>
-          <a href="course.html?id=${c.id}" class="btn btn-primary" style="width:100%;">متابعة الكورس</a>
+          <div class="prog"><div class="prog-fill" style="width:${c.progress || 0}%"></div></div>
         </div>
-      `;
-      grid.appendChild(div);
-    });
-  } catch (e) { grid.innerHTML = ''; if (empty) empty.style.display = 'block'; }
+        <a href="course.html?id=${c.id}" class="btn btn-primary" style="width:100%;">متابعة الكورس</a>
+      </div>
+    `;
+    grid.appendChild(div);
+  });
 }
 
 // Load course detail
@@ -297,28 +358,43 @@ async function loadCourse() {
   const params = new URLSearchParams(location.search);
   const id = params.get('id');
   if (!id) { toast('❌ كورس غير موجود'); return; }
+  const cacheKey = 'course-' + id;
+
+  // loadCourseExams renders the exams list itself as a side effect (it's
+  // not just a data fetch) and has its own loading state, so it always
+  // runs live — only the units/title/description data below goes
+  // through the cache.
+  loadCourseExams(id);
+
+  const fetchCourse = () => api('/units?courseId=' + id);
+
+  const cached = mfxCacheGet_(cacheKey);
+  if (cached) {
+    renderCourse_(cached);
+    return;
+  }
+
   try {
-    // These two are independent — fire them together, and reuse the
-    // course-detail response for the units accordion instead of the old
-    // code's second (redundant) call to the same endpoint.
-    const [c] = await Promise.all([
-      api('/units?courseId=' + id),
-      loadCourseExams(id)
-    ]);
-    document.getElementById('course-title').textContent = c.title || 'كورس';
-    document.getElementById('course-desc').textContent = c.description || '';
-    document.getElementById('course-meta').innerHTML = `
-      <span>📚 ${c.units || 0} وحدة</span>
-      <span>🎥 ${c.videos || 0} فيديو</span>
-      <span>📝 ${c.exams || 0} امتحان</span>
-    `;
-    document.getElementById('course-badges').innerHTML = `
-      ${c.popular ? '<span class="badge badge-warn">🔥 شائع</span>' : ''}
-      <span class="badge badge-ok">✓ مسجل</span>
-    `;
-    renderUnits(c.units || []);
-    renderVocabList_(c.vocabulary || []);
+    const c = await fetchCourse();
+    mfxCacheSet_(cacheKey, c);
+    renderCourse_(c);
   } catch (e) { toast('❌ فشل تحميل الكورس'); }
+}
+
+function renderCourse_(c) {
+  document.getElementById('course-title').textContent = c.title || 'كورس';
+  document.getElementById('course-desc').textContent = c.description || '';
+  document.getElementById('course-meta').innerHTML = `
+    <span>📚 ${c.units || 0} وحدة</span>
+    <span>🎥 ${c.videos || 0} فيديو</span>
+    <span>📝 ${c.exams || 0} امتحان</span>
+  `;
+  document.getElementById('course-badges').innerHTML = `
+    ${c.popular ? '<span class="badge badge-warn">🔥 شائع</span>' : ''}
+    <span class="badge badge-ok">✓ مسجل</span>
+  `;
+  renderUnits(c.units || []);
+  renderVocabList_(c.vocabulary || []);
 }
 
 // Course vocabulary — AI-read words/phrases (Web Speech API, no audio
@@ -841,30 +917,64 @@ async function confirmSubmit() {
   clearInterval(timerInt);
   clearInterval(autosaveInt);
   if ('speechSynthesis' in window) window.speechSynthesis.cancel();
-  const confirmBtn = document.querySelector('#submit-modal .btn-primary');
-  toast('⏳ جاري تسليم الامتحان...');
-  await withButtonLock(confirmBtn, 'جاري التسليم...', async () => {
-    try {
-      const data = await api('/attempts/' + examState.attemptId + '/submit', {
-        method: 'POST',
-        body: JSON.stringify({ answers: examState.answers })
-      });
-      if (!data || !data.ok) {
-        toast('❌ ' + ((data && data.error) || 'فشل تسليم الامتحان'));
-        return;
-      }
-      clearAnswersLocally_();
-      showSubmissionReceived_();
 
-      if (data.data && data.data.status === 'COMPLETED') {
-        // Already flushed (e.g. queue was empty and flushed instantly) —
-        // no need to poll at all.
-        showResult(data.data);
-        return;
-      }
-      pollSubmissionStatus_(examState.attemptId);
-    } catch (e) {}
-  });
+  // Truly optimistic submit: the student sees "✓ تم استلام إجاباتك"
+  // INSTANTLY — no waiting on the network at all. This is safe because
+  // every answer is already autosaved to the server every 10s AND kept
+  // in localStorage on every change (see saveAnswersLocally_), so the
+  // final POST /submit call below is really just "finalize + start
+  // grading", not the only copy of the student's answers. It's sent
+  // right after, in the background, with automatic retries — the
+  // student is only ever bothered with an error if it still hasn't
+  // gone through after those retries.
+  showSubmissionReceived_();
+  submitExamInBackground_(examState.attemptId, examState.answers);
+}
+
+// keepalive:true asks the browser to let this specific request finish
+// even if the page is being unloaded right as it fires (e.g. the
+// student closes the tab the instant they see "تم") — the same
+// protection a normal awaited request wouldn't have gotten anyway, so
+// this is a pure improvement, not a new risk. (Fetch's keepalive has a
+// combined ~64KB request-body cap across in-flight keepalive requests;
+// a typical exam answer payload is well under that, so this is a safe
+// default rather than something that needs its own fallback path.)
+async function submitExamInBackground_(attemptId, answers, attemptNum = 1) {
+  const MAX_ATTEMPTS = 3;
+  try {
+    const data = await api('/attempts/' + attemptId + '/submit', {
+      method: 'POST',
+      keepalive: true,
+      body: JSON.stringify({ answers })
+    });
+    if (!data || !data.ok) throw new Error((data && data.error) || 'فشل تسليم الامتحان');
+
+    clearAnswersLocally_();
+    if (data.data && data.data.status === 'COMPLETED') {
+      // Already flushed (e.g. queue was empty and flushed instantly) —
+      // no need to poll at all.
+      showResult(data.data);
+      return;
+    }
+    pollSubmissionStatus_(attemptId);
+  } catch (e) {
+    if (attemptNum < MAX_ATTEMPTS) {
+      // Silent retry — the student already sees "تم", so a flaky
+      // connection resolving itself a couple seconds later should never
+      // need to interrupt them with anything.
+      setTimeout(() => submitExamInBackground_(attemptId, answers, attemptNum + 1), 1500 * attemptNum);
+    } else {
+      // Only now, after automatic retries are exhausted, does the
+      // student need to know — same recovery UI ("إعادة المحاولة") used
+      // elsewhere in this flow, so it's a familiar state, not a new one.
+      setResultModalState_({
+        icon: '⚠️',
+        title: 'حدث خطأ أثناء حفظ الامتحان',
+        score: '', rank: 'إجاباتك محفوظة محليًا ولم تُفقد — جرّب "إعادة المحاولة"', time: '',
+        showRetry: true
+      });
+    }
+  }
 }
 
 // Step 1 of the two-step message from the spec: confirm receipt instantly,
@@ -903,13 +1013,7 @@ function setResultModalState_({ icon, title, score, rank, time, showRetry }) {
 // queueing (still idempotent — the attempt id is unchanged).
 async function retrySubmit_() {
   showSubmissionReceived_();
-  pollSubmissionStatus_(examState.attemptId);
-  try {
-    await api('/attempts/' + examState.attemptId + '/submit', {
-      method: 'POST',
-      body: JSON.stringify({ answers: examState.answers })
-    });
-  } catch (e) {}
+  submitExamInBackground_(examState.attemptId, examState.answers);
 }
 
 // Graduated polling: 2s, 4s, 8s, then holds at 8s. Stops immediately on
@@ -987,8 +1091,29 @@ async function loadDashboard() {
   const user = getUser();
   document.getElementById('student-name').textContent = user.name || '—';
   document.getElementById('nav-name').textContent = user.name || '—';
+
+  const fetchDashboard = () => api('/students/dashboard');
+
+  // Same instant-from-cache, refresh-in-background pattern as
+  // loadMyCourses.
+  const cached = mfxCacheGet_('dashboard');
+  if (cached) {
+    renderDashboard_(cached);
+    fetchDashboard().then((fresh) => {
+      if (fresh) { mfxCacheSet_('dashboard', fresh); renderDashboard_(fresh); }
+    }).catch(() => {});
+    return;
+  }
+
   try {
-    const data = await api('/students/dashboard');
+    const data = await fetchDashboard();
+    mfxCacheSet_('dashboard', data);
+    renderDashboard_(data);
+  } catch (e) {}
+}
+
+function renderDashboard_(data) {
+  try {
     if (data.courses != null) document.getElementById('dash-courses').textContent = data.courses;
     if (data.exams != null) document.getElementById('dash-exams').textContent = data.exams;
     if (data.avgScore != null) document.getElementById('dash-score').textContent = data.avgScore + '%';
@@ -1199,6 +1324,12 @@ async function deleteComment(commentId, videoId) {
 }
 
 // ===== Presentation viewer =====
+// mode 'images': the new custom in-platform viewer (slide images + our
+// own buttons/counter/keyboard/fullscreen — no Google UI visible).
+// mode 'iframe': the old Google Slides/file embed, kept as a fallback
+// for any presentation that hasn't been converted to Slides yet.
+let slideViewerState = { images: [], current: 0, mode: 'iframe' };
+
 async function loadPresentationPage() {
   const params = new URLSearchParams(location.search);
   const id = params.get('id');
@@ -1209,14 +1340,126 @@ async function loadPresentationPage() {
     if (!item) { toast('❌ الملف غير موجود'); return; }
     document.getElementById('presentation-title').textContent = item.title || 'عرض تقديمي';
     document.getElementById('back-to-course').href = 'course.html?id=' + item.unitId;
-    const frame = document.getElementById('presentation-frame');
-    const previewUrl = item.driveFileId
-      ? 'https://drive.google.com/file/d/' + item.driveFileId + '/preview'
-      : item.driveUrl;
-    if (frame) frame.src = previewUrl;
+
+    let slideImages = null;
+    if (item.slidesId) {
+      try {
+        const slidesRes = await api('/presentations/' + id + '/slides');
+        if (slidesRes && slidesRes.ok && slidesRes.data && slidesRes.data.slideImages && slidesRes.data.slideImages.length) {
+          slideImages = slidesRes.data.slideImages;
+        }
+      } catch (e) {
+        // getSlideImages failed (quota, Apps Script hiccup, etc.) — fall
+        // through to the iframe fallback below rather than leaving the
+        // student with a blank page.
+      }
+    }
+
+    if (slideImages) initSlideViewer_(slideImages);
+    else initIframeViewer_(item);
+
     renderPresentationWatermark();
     setupPresentationDeterrents();
   } catch (e) { toast('❌ فشل تحميل العرض التقديمي'); }
+}
+
+function initIframeViewer_(item) {
+  slideViewerState.mode = 'iframe';
+  const frame = document.getElementById('presentation-frame');
+  const img = document.getElementById('slide-image');
+  const controls = document.getElementById('slide-controls');
+  if (img) img.style.display = 'none';
+  if (controls) controls.style.display = 'none';
+  if (frame) {
+    frame.style.display = 'block';
+    // Trust the URL saved at upload/link time first — it's already the
+    // correct embeddable form (a Slides /embed URL for converted
+    // PowerPoint uploads, giving real next/previous slide arrows that
+    // work on both desktop and phone; or the right /preview form for a
+    // pasted link). Only fall back to rebuilding a generic file-preview
+    // URL from driveFileId if nothing better was stored.
+    const previewUrl = item.driveUrl
+      || (item.driveFileId ? 'https://drive.google.com/file/d/' + item.driveFileId + '/preview' : '');
+    frame.src = previewUrl;
+  }
+}
+
+function initSlideViewer_(slideImages) {
+  slideViewerState.mode = 'images';
+  slideViewerState.images = slideImages.slice().sort((a, b) => (a.order || 0) - (b.order || 0));
+  slideViewerState.current = 0;
+
+  const frame = document.getElementById('presentation-frame');
+  const img = document.getElementById('slide-image');
+  const controls = document.getElementById('slide-controls');
+  if (frame) { frame.style.display = 'none'; frame.src = ''; }
+  if (img) img.style.display = 'block';
+  if (controls) controls.style.display = 'flex';
+
+  renderCurrentSlide_();
+  setupSlideKeyboardNav_();
+}
+
+function renderCurrentSlide_() {
+  const img = document.getElementById('slide-image');
+  const counter = document.getElementById('slide-counter');
+  const prevBtn = document.getElementById('slide-prev-btn');
+  const nextBtn = document.getElementById('slide-next-btn');
+  const { images, current } = slideViewerState;
+  if (img) img.src = images[current].imageUrl;
+  if (counter) counter.textContent = `شريحة ${current + 1} من ${images.length}`;
+  if (prevBtn) prevBtn.disabled = current === 0;
+  if (nextBtn) nextBtn.disabled = current === images.length - 1;
+  // Warm the browser cache for the next/previous slide so paging feels
+  // instant instead of showing a blank frame while it fetches.
+  [current - 1, current + 1].forEach((i) => {
+    if (i >= 0 && i < images.length) { const pre = new Image(); pre.src = images[i].imageUrl; }
+  });
+}
+
+function nextSlide() {
+  if (slideViewerState.mode !== 'images') return;
+  if (slideViewerState.current < slideViewerState.images.length - 1) {
+    slideViewerState.current += 1;
+    renderCurrentSlide_();
+  }
+}
+function prevSlide() {
+  if (slideViewerState.mode !== 'images') return;
+  if (slideViewerState.current > 0) {
+    slideViewerState.current -= 1;
+    renderCurrentSlide_();
+  }
+}
+
+// Attached once via this flag since loadPresentationPage only runs once
+// per page load — guards against a future double-init adding the
+// listener twice.
+let slideKeyboardNavAttached_ = false;
+function setupSlideKeyboardNav_() {
+  if (slideKeyboardNavAttached_) return;
+  slideKeyboardNavAttached_ = true;
+  document.addEventListener('keydown', (e) => {
+    if (slideViewerState.mode !== 'images') return;
+    const tag = document.activeElement && document.activeElement.tagName;
+    if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+    // Right arrow = next, left = previous — matches PowerPoint's own
+    // default keys regardless of the page's RTL layout, so it behaves
+    // the way a student already expects from PowerPoint/Slides itself.
+    if (e.key === 'ArrowRight') { e.preventDefault(); nextSlide(); }
+    else if (e.key === 'ArrowLeft') { e.preventDefault(); prevSlide(); }
+    else if (e.key === 'Escape' && document.fullscreenElement) { document.exitFullscreen(); }
+  });
+}
+
+function toggleSlideFullscreen() {
+  const wrap = document.getElementById('presentation-viewer');
+  if (!wrap) return;
+  if (!document.fullscreenElement) {
+    wrap.requestFullscreen?.().catch(() => toast('❌ تعذر فتح وضع ملء الشاشة'));
+  } else {
+    document.exitFullscreen();
+  }
 }
 
 // Tiles the student's name + code across the presentation area so any
@@ -1366,6 +1609,32 @@ function toggleAcc(header) {
 }
 
 // Init
+// ===== Cross-page cache (sessionStorage) =====
+// This is a traditional multi-page site — every navigation (index.html ->
+// course.html -> ...) is a full page reload, so a plain in-memory JS
+// variable wouldn't survive it. sessionStorage does (same tab, cleared
+// when the tab closes). Used so "كورساتي" / "لوحتي" can render INSTANTLY
+// from a cache that was quietly warmed up by an earlier visit to that
+// same page — instead of waiting on a fresh Google Sheets round-trip
+// every single time.
+const MFX_CACHE_TTL_MS = 60 * 1000;
+function mfxCacheGet_(key) {
+  try {
+    const raw = sessionStorage.getItem('mfx_cache_' + key);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (Date.now() - parsed.at > MFX_CACHE_TTL_MS) return null;
+    return parsed.data;
+  } catch (e) {
+    return null;
+  }
+}
+function mfxCacheSet_(key, data) {
+  try {
+    sessionStorage.setItem('mfx_cache_' + key, JSON.stringify({ data, at: Date.now() }));
+  } catch (e) {}
+}
+
 document.addEventListener('DOMContentLoaded', async () => {
   const path = location.pathname;
   if (path.includes('login.html')) {
